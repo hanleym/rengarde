@@ -1,0 +1,22 @@
+[package]
+name = "shared"
+edition = "2021"
+version.workspace = true
+
+[dependencies]
+
+anyhow = "1.0"
+log = "0.4"
+
+tonic = "0.11"
+
+opentelemetry = { version = "0.23", features = ["logs", "metrics", "trace"] }
+opentelemetry_sdk = { version = "0.23", features = ["rt-tokio", "logs", "metrics", "trace"] }
+opentelemetry-stdout = { version = "0.4", features = ["logs", "metrics", "trace"] }
+opentelemetry-otlp = { version = "0.16", features = ["grpc-tonic", "logs", "metrics", "trace"] }
+opentelemetry-semantic-conventions = "0.15"
+#opentelemetry-appender-log = { version = "0.3", default-features = false }
+tracing = "0.1"
+tracing-core = "0.1"
+tracing-opentelemetry = "0.24"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

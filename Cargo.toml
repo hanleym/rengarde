@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/client",
+    "crates/server",
+    "crates/shared",
+]
+
+[workspace.package]
+version = "0.1.0"

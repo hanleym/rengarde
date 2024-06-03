@@ -1,0 +1,29 @@
+.direnv
+.std
+
+.idea
+.vscode
+
+# prj-spec dirs
+# <https://github.com/numtide/prj-spec>
+.bin
+.cache
+.config
+.data
+.run
+
+# nixago: ignore-linked-files
+lefthook.yml
+.editorconfig
+.conform.yaml
+treefmt.toml
+
+# nixago-auto-created: mdbook-build-folder
+docs/build
+
+data
+dist
+result
+target
+
+engarde.yml
