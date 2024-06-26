@@ -14,7 +14,7 @@ use tokio::net::UdpSocket;
 use tokio::select;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, info_span, Instrument, warn};
+use tracing::{debug, info, info_span, Instrument, trace, warn};
 
 // The maximum transmission unit (MTU) of an Ethernet frame is 1518 bytes with the normal untagged
 // Ethernet frame overhead of 18 bytes and the 1500-byte payload.
@@ -61,7 +61,7 @@ struct SendingRoutine {
 
 impl SendingRoutine {
     fn new(ifname: String, src_socket: Arc<UdpSocket>, src_addr: SocketAddr, dst_addr: SocketAddr) -> Self {
-        debug!(
+        info!(
             event = "added",
             iface_name = ifname,
             src_addr = src_addr.to_string(),
@@ -86,7 +86,7 @@ impl SendingRoutine {
         // debug!("\tSending {} bytes on iface {} to client '{:?}'", buf.len(), self.ifname, self.dst_addr);
         match self.src_socket.send_to(buf, self.dst_addr).await {
             Ok(sent_bytes) => {
-                debug!(
+                trace!(
                     sent_bytes = sent_bytes,
                     dst_ifname = self.ifname,
                     dst_addr = self.dst_addr.to_string(),
@@ -175,7 +175,7 @@ async fn main() -> Result<()> {
 
     // default to 10; but allow 0 for disabling write timeout
     if settings.client.write_timeout.is_none() {
-        debug!("Write timeout not set; setting to 10ms.");
+        info!("Write timeout not set; setting to 10ms.");
         settings.client.write_timeout = Some(10);
     }
     // warn if write timeout is enabled; it's not implemented yet
@@ -307,7 +307,7 @@ impl Service {
             // delete unavailable interfaces
             let drop_list: Vec<_> = self.routines.iter().filter_map(|routine| {
                 if self.settings.excluded_interfaces.contains(routine.key()) {
-                    info!("Interface '{}' is excluded; removing it", routine.key());
+                    warn!("Interface '{}' is excluded; removing it", routine.key());
                     return Some(routine.key().clone());
                 }
                 match interfaces.iter().find(|interface| &interface.name == routine.key()) {
@@ -323,13 +323,13 @@ impl Service {
                                 }
                             }
                             None => {
-                                info!("Interface '{}' has no address; removing it", routine.key());
+                                warn!("Interface '{}' has no address; removing it", routine.key());
                                 Some(routine.key().clone())
                             }
                         }
                     }
                     None => {
-                        info!("Interface '{}' no longer exists; removing it", routine.key());
+                        warn!("Interface '{}' no longer exists; removing it", routine.key());
                         Some(routine.key().clone())
                     }
                 }
@@ -443,7 +443,7 @@ impl Service {
             let routine = self.routines.get(&ifname).ok_or_else(|| anyhow!("Interface '{}' not found", ifname))?;
             debug!("Got interface {} from routines", ifname);
             if routine.is_closing {
-                debug!("Interface '{}' is closing; closing thread", ifname);
+                warn!("Interface '{}' is closing; closing thread", ifname);
                 return Ok(());
             }
             // clone the socket
@@ -466,7 +466,7 @@ impl Service {
                             // send to wireguard
                             let wg_addr = *self.source_addr.lock().unwrap();
                             wireguard_socket.send_to(&buf[..received_bytes], wg_addr).await?;
-                            debug!("\tSent {} bytes to wireguard", received_bytes);
+                            trace!("\tSent {} bytes to wireguard", received_bytes);
                         }
                         Err(err) => {
                             warn!("Error receiving from interface '{}': {:?}", ifname, err);
@@ -497,12 +497,12 @@ impl Service {
                     match result {
                         Ok((received_bytes, src_addr)) => {
                             *self.source_addr.lock().unwrap() = src_addr;
-                            debug!(
+                            trace!(
                                 received_bytes = received_bytes,
                                 src_addr = src_addr.to_string(),
                                 "Received {} bytes from wireguard on '{:?}'", received_bytes, src_addr
                             );
-                            debug!("\tSending to {} clients", self.routines.len());
+                            trace!("\tSending to {} clients", self.routines.len());
 
                             // send to interfaces in parallel using streams
                             let drop_list = futures::stream::iter(self.routines.iter_mut())
@@ -522,7 +522,7 @@ impl Service {
                                 // drop(routines);
                             }
 
-                            debug!("Sent to {} clients", self.routines.len());
+                            trace!("Sent to {} clients", self.routines.len());
                         }
                         Err(err) => {
                             warn!("Error receiving from wireguard: {:?}", err);

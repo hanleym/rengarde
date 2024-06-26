@@ -8,7 +8,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 // use tokio::time::sleep;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 // The maximum transmission unit (MTU) of an Ethernet frame is 1518 bytes with the normal untagged
 // Ethernet frame overhead of 18 bytes and the 1500-byte payload.
@@ -92,13 +92,13 @@ async fn main() -> Result<()> {
     }
 
     if matches!(settings.server.client_timeout, None | Some(0)) {
-        debug!("Client timeout not set; setting to 30s.");
+        info!("Client timeout not set; setting to 30s.");
         settings.server.client_timeout = Some(30);
     }
 
     // default to 10; but allow 0 for disabling write timeout
     if settings.server.write_timeout.is_none() {
-        debug!("Write timeout not set; setting to 10ms.");
+        info!("Write timeout not set; setting to 10ms.");
         settings.server.write_timeout = Some(10);
     }
     // warn if write timeout is enabled; it's not implemented yet
@@ -163,7 +163,7 @@ async fn receive_from_client(clients: Clients, client_socket: Arc<UdpSocket>, wi
         let (received_bytes, src_addr) = client_socket.recv_from(&mut buf).await?;
         let received_at = Instant::now();
 
-        debug!(
+        trace!(
             received_bytes = received_bytes,
             src_addr = src_addr.to_string(),
             "Received {} bytes from client '{:?}'", received_bytes, src_addr
@@ -184,7 +184,7 @@ async fn receive_from_client(clients: Clients, client_socket: Arc<UdpSocket>, wi
 
         // send to wireguard
         wireguard_socket.send_to(&buf[..received_bytes], wireguard_addr).await?;
-        debug!(
+        trace!(
             // sent_bytes = received_bytes,
             // dst_addr = wireguard_addr,
             "\tSent {} bytes to wireguard on '{:?}'", received_bytes, wireguard_addr
@@ -212,7 +212,7 @@ async fn receive_from_wireguard(clients: Clients, wireguard_socket: Arc<UdpSocke
                 async move {
                     // check if the client has timed out
                     if received_at.duration_since(client.last_received_at).as_secs() > client_timeout {
-                        info!("Client '{:?}' timed out", client.addr);
+                        warn!("Client '{:?}' timed out", client.addr);
                         return Some(client.addr);
                     }
                     // implement a write timeout
@@ -225,7 +225,7 @@ async fn receive_from_wireguard(clients: Clients, wireguard_socket: Arc<UdpSocke
                         return Some(client.addr);
                     }
 
-                    debug!(
+                    trace!(
                         sent_bytes = received_bytes,
                         dst_addr = client.addr.to_string(),
                         "\tSent {} bytes to client '{:?}'", received_bytes, client.addr

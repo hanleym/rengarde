@@ -210,7 +210,8 @@ Of course! Feel free to open an issue for any necessity ;)
 
 ## I love it, can I offer you a coffee?
 
-Wow, thanks! I appreciate it, you can drop the original author some Bitcoin at 39fBEZvKvxf2aZUBWWV1PuoKwCUvk6VWLg
+Wow, thanks! I appreciate it, you can drop the original author some Bitcoin at:
+`39fBEZvKvxf2aZUBWWV1PuoKwCUvk6VWLg`
 
 ## License
 
