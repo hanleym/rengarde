@@ -9,31 +9,7 @@ use opentelemetry_semantic_conventions::resource::{DEPLOYMENT_ENVIRONMENT, SERVI
 use opentelemetry_semantic_conventions::SCHEMA_URL;
 use tracing_core::{Level, LevelFilter};
 use tracing_opentelemetry::{MetricsLayer, OpenTelemetryLayer};
-use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
-
-pub struct Guard {
-    meter_provider: Option<SdkMeterProvider>,
-}
-
-impl Drop for Guard {
-    fn drop(&mut self) {
-        if let Err(err) = self.meter_provider.as_ref().map_or(Ok(()), |m| m.shutdown()) {
-            eprintln!("{err:?}");
-        }
-        global::shutdown_tracer_provider();
-    }
-}
-
-pub fn init() -> Result<Guard> {
-    let mut guard = Guard {
-        meter_provider: None,
-    };
-
-    if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-        guard.meter_provider = Some(init_tracing_subscriber(&endpoint));
-    }
-    Ok(guard)
-}
+use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[allow(clippy::too_many_arguments)]
 pub fn print_header(
@@ -64,6 +40,28 @@ pub fn print_header(
         rust_runtime,
         version_string,
     );
+}
+
+pub struct Guard {
+    meter_provider: Option<SdkMeterProvider>,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        if let Err(err) = self.meter_provider.as_ref().map_or(Ok(()), |m| m.shutdown()) {
+            eprintln!("{err:?}");
+        }
+        global::shutdown_tracer_provider();
+    }
+}
+
+pub fn init() -> Result<Guard>
+{
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
+    let meter_provider = init_tracing_subscriber(endpoint.as_ref().map(String::as_str));
+    Ok(Guard {
+        meter_provider,
+    })
 }
 
 fn resource() -> Resource {
@@ -97,16 +95,13 @@ fn init_meter_provider(endpoint: &str) -> SdkMeterProvider {
     let meter_provider = MeterProviderBuilder::default()
         .with_resource(resource())
         .with_reader(reader)
-        // .with_reader(stdout_reader)
-        // .with_view(view_foo)
-        // .with_view(view_baz)
         .build();
 
     global::set_meter_provider(meter_provider.clone());
     meter_provider
 }
 
-fn init_tracer(endpoint: &str) -> Tracer {
+fn init_tracer_provider(endpoint: &str) -> Tracer {
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
         .with_endpoint(endpoint);
@@ -129,24 +124,26 @@ fn init_tracer(endpoint: &str) -> Tracer {
         .unwrap()
 }
 
-fn init_tracing_subscriber(endpoint: &str) -> SdkMeterProvider {
-    let meter_provider = init_meter_provider(endpoint);
+fn init_tracing_subscriber(endpoint: Option<&str>) -> Option<SdkMeterProvider> {
+    let tracer_provider = endpoint.map(init_tracer_provider);
+    let meter_provider = endpoint.map(init_meter_provider);
 
     tracing_subscriber::registry()
         .with(LevelFilter::from_level(
             Level::DEBUG,
         ))
         .with(tracing_subscriber::fmt::layer()
-            .with_thread_ids(true)
+            .with_level(true)
             .with_target(false)
+            .with_thread_ids(true)
             .with_filter(
-                EnvFilter::builder()
-                    .with_default_directive(LevelFilter::from_level(Level::INFO).into())
+                tracing_subscriber::EnvFilter::builder()
+                    .with_default_directive(LevelFilter::INFO.into())
                     .from_env_lossy(),
             )
         )
-        .with(MetricsLayer::new(meter_provider.clone()))
-        .with(OpenTelemetryLayer::new(init_tracer(endpoint)))
+        .with(meter_provider.clone().map(MetricsLayer::new))
+        .with(tracer_provider.map(OpenTelemetryLayer::new))
         .init();
 
     meter_provider
