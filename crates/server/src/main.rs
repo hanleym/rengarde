@@ -7,7 +7,6 @@ use dashmap::DashMap;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
-// use tokio::time::sleep;
 use tracing::{debug, info, trace, warn};
 
 // The maximum transmission unit (MTU) of an Ethernet frame is 1518 bytes with the normal untagged
@@ -53,37 +52,16 @@ pub struct WebManager {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = shared::init()?;
-
-    let rengarde_official_build = option_env!("RENGARDE_OFFICIAL_BUILD").unwrap_or("false").parse::<bool>()?;
     let cargo_pkg_name = env!("CARGO_PKG_NAME");
     let cargo_pkg_version = env!("CARGO_PKG_VERSION");
-    let vergen_git_describe = env!("VERGEN_GIT_DESCRIBE");
-    let vergen_git_dirty = env!("VERGEN_GIT_DIRTY");
-    let vergen_build_timestamp = env!("VERGEN_BUILD_TIMESTAMP");
-    let vergen_cargo_target_triple = env!("VERGEN_CARGO_TARGET_TRIPLE");
-    let rust_runtime = if cfg!(feature = "rt-rayon") {
-        "rayon"
-    } else if cfg!(feature = "rt-tokio") {
-        "tokio"
-    } else {
-        unimplemented!("No runtime feature enabled");
-    };
+    let git_rev = option_env!("GIT_REV");
+    shared::print_header(cargo_pkg_name, cargo_pkg_version, git_rev);
 
-    shared::print_header(
-        rengarde_official_build,
-        cargo_pkg_name,
-        cargo_pkg_version,
-        vergen_git_describe,
-        vergen_git_dirty,
-        vergen_build_timestamp,
-        vergen_cargo_target_triple,
-        rust_runtime,
-    );
+    let guard = shared::init();
 
-    let config_path = std::env::args().nth(1).unwrap_or_else(|| {
-        String::from("engarde.yml")
-    });
+    let config_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| String::from("engarde.yml"));
 
     let settings = std::fs::read_to_string(&config_path)?;
     let mut settings: Settings = serde_yaml::from_str(&settings)?;
@@ -129,7 +107,14 @@ async fn main() -> Result<()> {
         let client_socket = client_socket.clone();
         let wireguard_socket = wireguard_socket.clone();
         async move {
-            if let Err(err) = receive_from_client(clients, client_socket, wireguard_socket, &settings.server.dst_addr).await {
+            if let Err(err) = receive_from_client(
+                clients,
+                client_socket,
+                wireguard_socket,
+                &settings.server.dst_addr,
+            )
+            .await
+            {
                 warn!("receive_from_client failed: {:?}", err);
             }
         }
@@ -141,21 +126,35 @@ async fn main() -> Result<()> {
         let wireguard_socket = wireguard_socket.clone();
         let client_socket = client_socket.clone();
         async move {
-            if let Err(err) = receive_from_wireguard(clients, wireguard_socket, client_socket, settings.server.client_timeout.unwrap(), settings.server.write_timeout.unwrap()).await {
+            if let Err(err) = receive_from_wireguard(
+                clients,
+                wireguard_socket,
+                client_socket,
+                settings.server.client_timeout.unwrap(),
+                settings.server.write_timeout.unwrap(),
+            )
+            .await
+            {
                 panic!("receive_from_wireguard thread failed: {:?}", err);
             }
         }
     });
 
-    join_receive_from_client.await.unwrap();
-    join_receive_from_wireguard.await.unwrap();
+    join_receive_from_client.await?;
+    join_receive_from_wireguard.await?;
     warn!("All threads joined; exiting...");
 
+    drop(guard);
     Ok(())
 }
 
 #[tracing::instrument(skip_all)]
-async fn receive_from_client(clients: Clients, client_socket: Arc<UdpSocket>, wireguard_socket: Arc<UdpSocket>, wireguard_addr: &str) -> Result<()> {
+async fn receive_from_client(
+    clients: Clients,
+    client_socket: Arc<UdpSocket>,
+    wireguard_socket: Arc<UdpSocket>,
+    wireguard_addr: &str,
+) -> Result<()> {
     // tracing::info!(histogram.baz = 10, "histogram example",);
 
     let mut buf = [0; BUFFER_SIZE];
@@ -166,34 +165,49 @@ async fn receive_from_client(clients: Clients, client_socket: Arc<UdpSocket>, wi
         trace!(
             received_bytes = received_bytes,
             src_addr = src_addr.to_string(),
-            "Received {} bytes from client '{:?}'", received_bytes, src_addr
+            "Received {} bytes from client '{:?}'",
+            received_bytes,
+            src_addr
         );
 
         // update the client last received timestamp
-        clients.entry(src_addr).and_modify(|client| {
-            client.last_received_at = received_at;
-            client.total_received_bytes += received_bytes;
-        }).or_insert_with(|| {
-            info!("New client connected: '{:?}'", src_addr);
-            Client {
-                addr: src_addr,
-                last_received_at: received_at,
-                total_received_bytes: received_bytes,
-            }
-        });
+        clients
+            .entry(src_addr)
+            .and_modify(|client| {
+                client.last_received_at = received_at;
+                client.total_received_bytes += received_bytes;
+            })
+            .or_insert_with(|| {
+                info!("New client connected: '{:?}'", src_addr);
+                Client {
+                    addr: src_addr,
+                    last_received_at: received_at,
+                    total_received_bytes: received_bytes,
+                }
+            });
 
         // send to wireguard
-        wireguard_socket.send_to(&buf[..received_bytes], wireguard_addr).await?;
+        wireguard_socket
+            .send_to(&buf[..received_bytes], wireguard_addr)
+            .await?;
         trace!(
             // sent_bytes = received_bytes,
             // dst_addr = wireguard_addr,
-            "\tSent {} bytes to wireguard on '{:?}'", received_bytes, wireguard_addr
+            "\tSent {} bytes to wireguard on '{:?}'",
+            received_bytes,
+            wireguard_addr
         );
     }
 }
 
 #[tracing::instrument(skip_all)]
-async fn receive_from_wireguard(clients: Clients, wireguard_socket: Arc<UdpSocket>, client_socket: Arc<UdpSocket>, client_timeout: u64, _write_timeout: u64) -> Result<()> {
+async fn receive_from_wireguard(
+    clients: Clients,
+    wireguard_socket: Arc<UdpSocket>,
+    client_socket: Arc<UdpSocket>,
+    client_timeout: u64,
+    _write_timeout: u64,
+) -> Result<()> {
     let mut buf = [0; BUFFER_SIZE];
     loop {
         let received_bytes = wireguard_socket.recv(&mut buf).await?;
@@ -202,7 +216,8 @@ async fn receive_from_wireguard(clients: Clients, wireguard_socket: Arc<UdpSocke
         debug!(
             // received_bytes = received_bytes,
             // src_addr = ,
-            "Received {} bytes from wireguard", received_bytes
+            "Received {} bytes from wireguard",
+            received_bytes
         );
 
         // send to clients
@@ -211,7 +226,11 @@ async fn receive_from_wireguard(clients: Clients, wireguard_socket: Arc<UdpSocke
                 let client_socket = client_socket.clone();
                 async move {
                     // check if the client has timed out
-                    if received_at.duration_since(client.last_received_at).as_secs() > client_timeout {
+                    if received_at
+                        .duration_since(client.last_received_at)
+                        .as_secs()
+                        > client_timeout
+                    {
                         warn!("Client '{:?}' timed out", client.addr);
                         return Some(client.addr);
                     }
@@ -220,15 +239,24 @@ async fn receive_from_wireguard(clients: Clients, wireguard_socket: Arc<UdpSocke
                     //
                     // }
                     // send to client
-                    if client_socket.send_to(&buf[..received_bytes], &client.addr).await.is_err() {
-                        warn!("Error writing to client '{:?}', terminating it", client.addr);
+                    if client_socket
+                        .send_to(&buf[..received_bytes], &client.addr)
+                        .await
+                        .is_err()
+                    {
+                        warn!(
+                            "Error writing to client '{:?}', terminating it",
+                            client.addr
+                        );
                         return Some(client.addr);
                     }
 
                     trace!(
                         sent_bytes = received_bytes,
                         dst_addr = client.addr.to_string(),
-                        "\tSent {} bytes to client '{:?}'", received_bytes, client.addr
+                        "\tSent {} bytes to client '{:?}'",
+                        received_bytes,
+                        client.addr
                     );
                     None
                 }

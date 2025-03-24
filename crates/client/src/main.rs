@@ -1,5 +1,4 @@
 #![feature(ip)]
-#![feature(test)]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -14,7 +13,7 @@ use tokio::net::UdpSocket;
 use tokio::select;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, info_span, Instrument, trace, warn};
+use tracing::{debug, info, info_span, trace, warn, Instrument};
 
 // The maximum transmission unit (MTU) of an Ethernet frame is 1518 bytes with the normal untagged
 // Ethernet frame overhead of 18 bytes and the 1500-byte payload.
@@ -60,13 +59,19 @@ struct SendingRoutine {
 }
 
 impl SendingRoutine {
-    fn new(ifname: String, src_socket: Arc<UdpSocket>, src_addr: SocketAddr, dst_addr: SocketAddr) -> Self {
+    fn new(
+        ifname: String,
+        src_socket: Arc<UdpSocket>,
+        src_addr: SocketAddr,
+        dst_addr: SocketAddr,
+    ) -> Self {
         info!(
             event = "added",
             iface_name = ifname,
             src_addr = src_addr.to_string(),
             dst_addr = dst_addr.to_string(),
-            "\tAdded interface '{}' to sending routines", ifname
+            "\tAdded interface '{}' to sending routines",
+            ifname
         );
         Self {
             ifname,
@@ -90,7 +95,10 @@ impl SendingRoutine {
                     sent_bytes = sent_bytes,
                     dst_ifname = self.ifname,
                     dst_addr = self.dst_addr.to_string(),
-                    "\tSent {} bytes on iface {} to client '{:?}'", sent_bytes, self.ifname, self.dst_addr
+                    "\tSent {} bytes on iface {} to client '{:?}'",
+                    sent_bytes,
+                    self.ifname,
+                    self.dst_addr
                 );
                 // self.last_sent_at = Instant::now();
                 // self.total_sent_bytes += sent_bytes;
@@ -100,7 +108,9 @@ impl SendingRoutine {
                 warn!(
                     event = "disconnect",
                     dst_addr = self.dst_addr.to_string(),
-                    "Error writing to client '{:?}', terminating it: {:?}", self.dst_addr, err
+                    "Error writing to client '{:?}', terminating it: {:?}",
+                    self.dst_addr,
+                    err
                 );
                 Some(self.ifname.clone())
             }
@@ -115,7 +125,8 @@ impl Drop for SendingRoutine {
             iface_name = self.ifname,
             src_addr = self.src_addr.to_string(),
             dst_addr = self.dst_addr.to_string(),
-            "\tRemoved interface '{}' from sending routines", self.ifname
+            "\tRemoved interface '{}' from sending routines",
+            self.ifname
         );
     }
 }
@@ -131,37 +142,16 @@ struct Service {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = shared::init()?;
-
-    let rengarde_official_build = option_env!("RENGARDE_OFFICIAL_BUILD").unwrap_or("false").parse::<bool>()?;
     let cargo_pkg_name = env!("CARGO_PKG_NAME");
     let cargo_pkg_version = env!("CARGO_PKG_VERSION");
-    let vergen_git_describe = env!("VERGEN_GIT_DESCRIBE");
-    let vergen_git_dirty = env!("VERGEN_GIT_DIRTY");
-    let vergen_build_timestamp = env!("VERGEN_BUILD_TIMESTAMP");
-    let vergen_cargo_target_triple = env!("VERGEN_CARGO_TARGET_TRIPLE");
-    let rust_runtime = if cfg!(feature = "rt-rayon") {
-        "rayon"
-    } else if cfg!(feature = "rt-tokio") {
-        "tokio"
-    } else {
-        unimplemented!("No runtime feature enabled");
-    };
+    let git_rev = option_env!("GIT_REV");
+    shared::print_header(cargo_pkg_name, cargo_pkg_version, git_rev);
 
-    shared::print_header(
-        rengarde_official_build,
-        cargo_pkg_name,
-        cargo_pkg_version,
-        vergen_git_describe,
-        vergen_git_dirty,
-        vergen_build_timestamp,
-        vergen_cargo_target_triple,
-        rust_runtime,
-    );
+    let guard = shared::init();
 
-    let config_path = std::env::args().nth(1).unwrap_or_else(|| {
-        String::from("engarde.yml")
-    });
+    let config_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| String::from("engarde.yml"));
 
     if config_path == "list-interfaces" {
         return list_interfaces();
@@ -189,6 +179,8 @@ async fn main() -> Result<()> {
 
     let service = Service::new(settings.client);
     service.run().await?;
+
+    drop(guard);
     Ok(())
 }
 
@@ -234,9 +226,10 @@ impl Service {
             shutdown: CancellationToken::new(),
             settings,
             routines: Arc::new(Default::default()),
-            source_addr: Arc::new(Mutex::new(
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)
-            )),
+            source_addr: Arc::new(Mutex::new(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+                0,
+            ))),
         }
     }
 
@@ -305,35 +298,51 @@ impl Service {
             // TODO: retry?
 
             // delete unavailable interfaces
-            let drop_list: Vec<_> = self.routines.iter().filter_map(|routine| {
-                if self.settings.excluded_interfaces.contains(routine.key()) {
-                    warn!("Interface '{}' is excluded; removing it", routine.key());
-                    return Some(routine.key().clone());
-                }
-                match interfaces.iter().find(|interface| &interface.name == routine.key()) {
-                    Some(iface) => {
-                        match get_address_by_interface(iface) {
-                            Some(addr) => {
-                                if addr != routine.value().src_addr.ip() {
-                                    info!("Interface '{}' address changed; re-creating it", routine.key());
+            let drop_list: Vec<_> = self
+                .routines
+                .iter()
+                .filter_map(|routine| {
+                    if self.settings.excluded_interfaces.contains(routine.key()) {
+                        warn!("Interface '{}' is excluded; removing it", routine.key());
+                        return Some(routine.key().clone());
+                    }
+                    match interfaces
+                        .iter()
+                        .find(|interface| &interface.name == routine.key())
+                    {
+                        Some(iface) => {
+                            match get_address_by_interface(iface) {
+                                Some(addr) => {
+                                    if addr != routine.value().src_addr.ip() {
+                                        info!(
+                                            "Interface '{}' address changed; re-creating it",
+                                            routine.key()
+                                        );
+                                        Some(routine.key().clone())
+                                    } else {
+                                        // all good
+                                        None
+                                    }
+                                }
+                                None => {
+                                    warn!(
+                                        "Interface '{}' has no address; removing it",
+                                        routine.key()
+                                    );
                                     Some(routine.key().clone())
-                                } else {
-                                    // all good
-                                    None
                                 }
                             }
-                            None => {
-                                warn!("Interface '{}' has no address; removing it", routine.key());
-                                Some(routine.key().clone())
-                            }
+                        }
+                        None => {
+                            warn!(
+                                "Interface '{}' no longer exists; removing it",
+                                routine.key()
+                            );
+                            Some(routine.key().clone())
                         }
                     }
-                    None => {
-                        warn!("Interface '{}' no longer exists; removing it", routine.key());
-                        Some(routine.key().clone())
-                    }
-                }
-            }).collect();
+                })
+                .collect();
 
             // drop the interfaces that are no longer available
             if !drop_list.is_empty() {
@@ -354,8 +363,14 @@ impl Service {
                 }
 
                 if let Some(source_addr) = get_address_by_interface(&iface) {
-                    if let Err(err) = self.create_send_thread(&iface, source_addr, wireguard_socket.clone()).await {
-                        warn!("Failed to create send thread for interface '{}': {:?}", iface.name, err);
+                    if let Err(err) = self
+                        .create_send_thread(&iface, source_addr, wireguard_socket.clone())
+                        .await
+                    {
+                        warn!(
+                            "Failed to create send thread for interface '{}': {:?}",
+                            iface.name, err
+                        );
                     }
                     debug!("Created send thread for interface '{}'", iface.name);
                 }
@@ -373,15 +388,34 @@ impl Service {
     }
 
     //#[tracing::instrument(skip_all)]
-    async fn create_send_thread(&self, iface: &NetworkInterface, source_addr: IpAddr, wireguard_socket: Arc<UdpSocket>) -> Result<()> {
-        info!("New interface '{}' with IP '{}', adding it", iface.name, source_addr);
+    async fn create_send_thread(
+        &self,
+        iface: &NetworkInterface,
+        source_addr: IpAddr,
+        wireguard_socket: Arc<UdpSocket>,
+    ) -> Result<()> {
+        info!(
+            "New interface '{}' with IP '{}', adding it",
+            iface.name, source_addr
+        );
 
         // TODO: allow destination overrides
         let dst_addr = tokio::net::lookup_host(&self.settings.dst_addr)
             .await
-            .map_err(|err| anyhow!("Failed to resolve destination address '{}': {:?}", self.settings.dst_addr, err))
+            .map_err(|err| {
+                anyhow!(
+                    "Failed to resolve destination address '{}': {:?}",
+                    self.settings.dst_addr,
+                    err
+                )
+            })
             .and_then(|mut addrs| {
-                addrs.next().ok_or_else(|| anyhow!("No address found for destination address '{}'", self.settings.dst_addr))
+                addrs.next().ok_or_else(|| {
+                    anyhow!(
+                        "No address found for destination address '{}'",
+                        self.settings.dst_addr
+                    )
+                })
             })?;
         debug!("\tDestination address: '{:?}'", dst_addr);
 
@@ -403,16 +437,14 @@ impl Service {
 
         let src_socket = Arc::new(src_socket);
 
-        let routine = SendingRoutine::new(
-            iface.name.to_owned(),
-            src_socket,
-            src_addr,
-            dst_addr,
-        );
+        let routine = SendingRoutine::new(iface.name.to_owned(), src_socket, src_addr, dst_addr);
 
         if let Some(routine) = self.routines.insert(iface.name.to_owned(), routine) {
             // TODO: handle this case...
-            panic!("Interface '{}' already existed when we tried to add it", routine.ifname);
+            panic!(
+                "Interface '{}' already existed when we tried to add it",
+                routine.ifname
+            );
         };
 
         tokio::spawn({
@@ -420,19 +452,29 @@ impl Service {
             let ifname = iface.name.to_owned();
             let wireguard_socket = wireguard_socket.clone();
             async move {
-                if let Err(err) = this.wireguard_write_back(ifname.clone(), wireguard_socket).await {
+                if let Err(err) = this
+                    .wireguard_write_back(ifname.clone(), wireguard_socket)
+                    .await
+                {
                     warn!("wireguard_write_back thread failed: {:?}", err);
                 };
                 debug!("wireguard_write_back thread closed: '{}'", ifname);
             }
         });
-        debug!("\tStarted wireguard_write_back thread for interface '{}'", iface.name);
+        debug!(
+            "\tStarted wireguard_write_back thread for interface '{}'",
+            iface.name
+        );
 
         Ok(())
     }
 
     //#[tracing::instrument(skip_all)]
-    async fn wireguard_write_back(&self, ifname: String, wireguard_socket: Arc<UdpSocket>) -> Result<()> {
+    async fn wireguard_write_back(
+        &self,
+        ifname: String,
+        wireguard_socket: Arc<UdpSocket>,
+    ) -> Result<()> {
         let mut buf = [0; BUFFER_SIZE];
         loop {
             // if self.shutdown.is_cancelled() {
@@ -440,7 +482,10 @@ impl Service {
             //     return Ok(());
             // }
 
-            let routine = self.routines.get(&ifname).ok_or_else(|| anyhow!("Interface '{}' not found", ifname))?;
+            let routine = self
+                .routines
+                .get(&ifname)
+                .ok_or_else(|| anyhow!("Interface '{}' not found", ifname))?;
             debug!("Got interface {} from routines", ifname);
             if routine.is_closing {
                 warn!("Interface '{}' is closing; closing thread", ifname);

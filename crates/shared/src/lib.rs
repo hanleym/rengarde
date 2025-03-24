@@ -1,94 +1,72 @@
-use anyhow::Result;
+use opentelemetry::trace::TracerProvider;
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::{metrics::{
-    MeterProviderBuilder, PeriodicReader, SdkMeterProvider,
-}, Resource, runtime, trace::{BatchConfig, RandomIdGenerator, Sampler, Tracer}};
-use opentelemetry_sdk::metrics::reader::{DefaultAggregationSelector, DefaultTemporalitySelector};
-use opentelemetry_semantic_conventions::resource::{DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, SERVICE_VERSION};
+use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::{
+    metrics::{MeterProviderBuilder, PeriodicReader, SdkMeterProvider},
+    trace::Sampler,
+    Resource,
+};
+use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
 use opentelemetry_semantic_conventions::SCHEMA_URL;
 use tracing_core::{Level, LevelFilter};
 use tracing_opentelemetry::{MetricsLayer, OpenTelemetryLayer};
-use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, Layer};
 
-#[allow(clippy::too_many_arguments)]
-pub fn print_header(
-    rengarde_official_build: bool,
-    cargo_pkg_name: &str,
-    cargo_pkg_version: &str,
-    vergen_git_describe: &str,
-    vergen_git_dirty: &str,
-    vergen_build_timestamp: &str,
-    vergen_cargo_target_triple: &str,
-    rust_runtime: &str,
-) {
-    let version_string = if rengarde_official_build {
-        cargo_pkg_version
-    } else {
-        &format!(
-            "{}{} built at {} for {} - UNOFFICIAL BUILD",
-            vergen_git_describe,
-            if vergen_git_dirty == "true" { "* (dirty)" } else { "" },
-            vergen_build_timestamp.split_at(19).0,
-            vergen_cargo_target_triple
-        )
-    };
-
+pub fn print_header(cargo_pkg_name: &str, cargo_pkg_version: &str, git_rev: Option<&str>) {
     println!(
-        "rengarde-{} ({}) ver. {}",
+        "rengarde-{} ver. {} rev. {}",
         cargo_pkg_name,
-        rust_runtime,
-        version_string,
+        cargo_pkg_version,
+        git_rev.unwrap_or("UNKNOWN")
     );
 }
 
-pub struct Guard {
+pub struct OtelGuard {
+    tracer_provider: Option<SdkTracerProvider>,
     meter_provider: Option<SdkMeterProvider>,
 }
 
-impl Drop for Guard {
+impl Drop for OtelGuard {
     fn drop(&mut self) {
-        if let Err(err) = self.meter_provider.as_ref().map_or(Ok(()), |m| m.shutdown()) {
-            eprintln!("{err:?}");
+        if let Some(tracer_provider) = &self.tracer_provider {
+            if let Err(err) = tracer_provider.shutdown() {
+                eprintln!("{err:?}");
+            }
         }
-        global::shutdown_tracer_provider();
+        if let Some(meter_provider) = &self.meter_provider {
+            if let Err(err) = meter_provider.shutdown() {
+                eprintln!("{err:?}");
+            }
+        }
     }
 }
 
-pub fn init() -> Result<Guard>
-{
+pub fn init() -> OtelGuard {
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
-    let meter_provider = init_tracing_subscriber(endpoint.as_ref().map(String::as_str));
-    Ok(Guard {
-        meter_provider,
-    })
+    init_tracing_subscriber(endpoint.as_deref())
 }
 
 fn resource() -> Resource {
-    Resource::from_schema_url(
-        [
-            KeyValue::new(SERVICE_NAME, env!("CARGO_PKG_NAME")),
-            KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
-            // KeyValue::new(RUST_RUNTIME, env!("")),
-            KeyValue::new(DEPLOYMENT_ENVIRONMENT, "develop"),
-        ],
-        SCHEMA_URL,
-    )
+    Resource::builder()
+        .with_schema_url(
+            [
+                KeyValue::new(SERVICE_NAME, env!("CARGO_PKG_NAME")),
+                KeyValue::new(SERVICE_VERSION, env!("CARGO_PKG_VERSION")),
+            ],
+            SCHEMA_URL,
+        )
+        .build()
 }
 
 fn init_meter_provider(endpoint: &str) -> SdkMeterProvider {
-    let exporter = opentelemetry_otlp::new_exporter()
-        .tonic()
-        .with_endpoint(endpoint);
-
-    let exporter = exporter
-        .build_metrics_exporter(
-            Box::new(DefaultAggregationSelector::new()),
-            Box::new(DefaultTemporalitySelector::new()),
-        )
+    let exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
         .unwrap();
 
-    let reader = PeriodicReader::builder(exporter, runtime::Tokio)
+    let reader = PeriodicReader::builder(exporter)
         .with_interval(std::time::Duration::from_secs(5))
         .build();
 
@@ -101,50 +79,46 @@ fn init_meter_provider(endpoint: &str) -> SdkMeterProvider {
     meter_provider
 }
 
-fn init_tracer_provider(endpoint: &str) -> Tracer {
-    let exporter = opentelemetry_otlp::new_exporter()
-        .tonic()
-        .with_endpoint(endpoint);
+fn init_tracer_provider(endpoint: &str) -> SdkTracerProvider {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()
+        .unwrap();
 
-    opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_trace_config(
-            opentelemetry_sdk::trace::Config::default()
-                // Customize sampling strategy
-                .with_sampler(Sampler::ParentBased(Box::new(Sampler::TraceIdRatioBased(
-                    1.0,
-                ))))
-                // If export trace to AWS X-Ray, you can use XrayIdGenerator
-                .with_id_generator(RandomIdGenerator::default())
-                .with_resource(resource()),
-        )
-        .with_batch_config(BatchConfig::default())
-        .with_exporter(exporter)
-        .install_batch(runtime::Tokio)
-        .unwrap()
+    SdkTracerProvider::builder()
+        .with_sampler(Sampler::AlwaysOn)
+        .with_resource(resource())
+        .with_batch_exporter(exporter)
+        .build()
 }
 
-fn init_tracing_subscriber(endpoint: Option<&str>) -> Option<SdkMeterProvider> {
+fn init_tracing_subscriber(endpoint: Option<&str>) -> OtelGuard {
     let tracer_provider = endpoint.map(init_tracer_provider);
     let meter_provider = endpoint.map(init_meter_provider);
 
+    let tracer = tracer_provider
+        .clone()
+        .map(|t| t.tracer("tracing-otel-subscriber"));
+
     tracing_subscriber::registry()
-        .with(LevelFilter::from_level(
-            Level::DEBUG,
-        ))
-        .with(tracing_subscriber::fmt::layer()
-            .with_level(true)
-            .with_target(false)
-            .with_thread_ids(true)
-            .with_filter(
-                tracing_subscriber::EnvFilter::builder()
-                    .with_default_directive(LevelFilter::INFO.into())
-                    .from_env_lossy(),
-            )
+        .with(LevelFilter::from_level(Level::DEBUG))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_level(true)
+                .with_target(false)
+                .with_thread_ids(true)
+                .with_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .with_default_directive(LevelFilter::INFO.into())
+                        .from_env_lossy(),
+                ),
         )
         .with(meter_provider.clone().map(MetricsLayer::new))
-        .with(tracer_provider.map(OpenTelemetryLayer::new))
-        .init();
+        .with(tracer.map(OpenTelemetryLayer::new));
 
-    meter_provider
+    OtelGuard {
+        tracer_provider,
+        meter_provider,
+    }
 }
