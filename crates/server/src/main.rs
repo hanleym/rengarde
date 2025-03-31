@@ -1,12 +1,13 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use dashmap::DashMap;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
+use tokio::sync::RwLock;
 use tracing::{debug, info, trace, warn};
 
 // The maximum transmission unit (MTU) of an Ethernet frame is 1518 bytes with the normal untagged
@@ -14,10 +15,9 @@ use tracing::{debug, info, trace, warn};
 const BUFFER_SIZE: usize = 1500;
 
 // type Clients = Arc<RwLock<HashMap<SocketAddr, Client>>>;
-type Clients = Arc<DashMap<SocketAddr, Client>>;
+type Clients = Arc<RwLock<HashMap<SocketAddr, Client>>>;
 
 struct Client {
-    addr: SocketAddr,
     last_received_at: Instant,
     total_received_bytes: usize,
 }
@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
     // dbg!(&settings);
 
     // let clients: Clients = Arc::new(RwLock::new(HashMap::new()));
-    let clients: Clients = Arc::new(DashMap::new());
+    let clients: Clients = Arc::new(RwLock::new(HashMap::new()));
 
     // wireguard_addr:  = settings.server.dst_addr.parse()?;
     let wireguard_socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
@@ -171,7 +171,8 @@ async fn receive_from_client(
         );
 
         // update the client last received timestamp
-        clients
+        let mut clients_locked = clients.write().await;
+        clients_locked
             .entry(src_addr)
             .and_modify(|client| {
                 client.last_received_at = received_at;
@@ -180,11 +181,11 @@ async fn receive_from_client(
             .or_insert_with(|| {
                 info!("New client connected: '{:?}'", src_addr);
                 Client {
-                    addr: src_addr,
                     last_received_at: received_at,
                     total_received_bytes: received_bytes,
                 }
             });
+        drop(clients_locked);
 
         // send to wireguard
         wireguard_socket
@@ -220,58 +221,60 @@ async fn receive_from_wireguard(
             received_bytes
         );
 
-        // send to clients
-        let drop_list: Vec<_> = futures::stream::iter(clients.iter())
-            .filter_map(|client| {
-                let client_socket = client_socket.clone();
-                async move {
-                    // check if the client has timed out
-                    if received_at
-                        .duration_since(client.last_received_at)
-                        .as_secs()
-                        > client_timeout
-                    {
-                        warn!("Client '{:?}' timed out", client.addr);
-                        return Some(client.addr);
-                    }
-                    // implement a write timeout
-                    // if write_timeout > 0 {
-                    //
-                    // }
-                    // send to client
-                    if client_socket
-                        .send_to(&buf[..received_bytes], &client.addr)
-                        .await
-                        .is_err()
-                    {
-                        warn!(
-                            "Error writing to client '{:?}', terminating it",
-                            client.addr
-                        );
-                        return Some(client.addr);
-                    }
-
-                    trace!(
-                        sent_bytes = received_bytes,
-                        dst_addr = client.addr.to_string(),
-                        "\tSent {} bytes to client '{:?}'",
-                        received_bytes,
-                        client.addr
-                    );
-                    None
+        let clients_locked = clients.read().await;
+        let (mut drop_list, send_list) = clients_locked.iter().fold(
+            (Vec::new(), Vec::new()),
+            |(mut drop_addrs, mut send_addrs), (addr, client)| {
+                if received_at
+                    .duration_since(client.last_received_at)
+                    .as_secs()
+                    > client_timeout
+                {
+                    drop_addrs.push(addr.clone());
+                } else {
+                    send_addrs.push(addr.clone());
                 }
-            })
-            .collect::<Vec<_>>()
-            .await;
+                (drop_addrs, send_addrs)
+            },
+        );
+        drop(clients_locked);
+
+        drop_list.append(
+            futures::stream::iter(send_list.into_iter())
+                .filter_map(|addr| {
+                    let client_socket = client_socket.clone();
+                    async move {
+                        if client_socket
+                            .send_to(&buf[..received_bytes], &addr)
+                            .await
+                            .is_err()
+                        {
+                            warn!("Error writing to client '{:?}', terminating it", addr);
+                            return Some(addr);
+                        }
+
+                        trace!(
+                            sent_bytes = received_bytes,
+                            dst_addr = addr.to_string(),
+                            "\tSent {} bytes to client '{:?}'",
+                            received_bytes,
+                            addr
+                        );
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .await
+                .as_mut(),
+        );
 
         // drop the clients that have timed out
         if !drop_list.is_empty() {
-            // TODO: can we do this with DashMap without locking each iteration?
-            // let mut clients_locked = clients.write().unwrap();
+            let mut clients_locked = clients.write().await;
             drop_list.into_iter().for_each(|addr| {
-                clients.remove(&addr);
+                clients_locked.remove(&addr);
             });
-            // drop(clients_locked);
+            drop(clients_locked);
         }
     }
 }

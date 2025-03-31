@@ -1183,7 +1183,6 @@ name = "server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dashmap",
  "futures",
  "serde",
  "serde_yaml",

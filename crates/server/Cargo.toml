@@ -8,7 +8,6 @@ shared = { path = "../shared" }
 
 # shared dependencies
 anyhow = "1.0"
-dashmap = "6.1"
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
