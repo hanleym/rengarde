@@ -11,6 +11,7 @@
       "${self}/Cargo.toml"
     ];
     strictDeps = true;
+    GIT_REV = self.dirtyRev or self.rev or "UNKNOWN";
   };
   rengarde-client = crane.buildPackage (basePkg // {
     meta.mainProgram = "client";
