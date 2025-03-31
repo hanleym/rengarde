@@ -11,6 +11,7 @@ use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION
 use opentelemetry_semantic_conventions::SCHEMA_URL;
 use tracing_core::{Level, LevelFilter};
 use tracing_opentelemetry::{MetricsLayer, OpenTelemetryLayer};
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{layer::SubscriberExt, Layer};
 
 pub fn print_header(cargo_pkg_name: &str, cargo_pkg_version: &str, git_rev: Option<&str>) {
@@ -115,7 +116,8 @@ fn init_tracing_subscriber(endpoint: Option<&str>) -> OtelGuard {
                 ),
         )
         .with(meter_provider.clone().map(MetricsLayer::new))
-        .with(tracer.map(OpenTelemetryLayer::new));
+        .with(tracer.map(OpenTelemetryLayer::new))
+        .init();
 
     OtelGuard {
         tracer_provider,
