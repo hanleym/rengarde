@@ -65,22 +65,16 @@
       });
     in {
       devShells.default = craneLib.devShell rec {
+        shellHook = ''
+          ln -sfn "${rustToolchain}" "$PWD/.rust"
+          export RUST_SRC_PATH="$PWD/.rust/lib/rustlib/src/rust/library"
+        '';
         buildInputs = with pkgs; [];
         LD_LIBRARY_PATH = "${lib.makeLibraryPath buildInputs}";
-        NIX_RUST_TOOLCHAIN = rustToolchain;
       };
       packages = {
         inherit rengarde-client rengarde-server;
       };
     };
   });
-
-  nixConfig = {
-    extra-substituters = [
-      "https://nix-community.cachix.org"
-    ];
-    extra-trusted-public-keys = [
-      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-    ];
-  };
 }
