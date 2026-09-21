@@ -4,11 +4,11 @@ edition = "2021"
 version.workspace = true
 
 [dependencies]
-opentelemetry = { version = "0.31", features = ["logs", "metrics", "trace"] }
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "logs", "metrics", "trace"] }
-opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "logs", "metrics", "trace"] }
-opentelemetry-semantic-conventions = "0.31"
+opentelemetry = { version = "0.32", features = ["logs", "metrics", "trace"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "logs", "metrics", "trace"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "logs", "metrics", "trace"] }
+opentelemetry-semantic-conventions = "0.32"
 tracing = "0.1"
 tracing-core = "0.1"
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
