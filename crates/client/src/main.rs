@@ -1,5 +1,3 @@
-#![feature(ip)]
-
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -199,25 +197,28 @@ fn list_interfaces() -> Result<()> {
 
 fn get_address_by_interface(iface: &NetworkInterface) -> Option<IpAddr> {
     iface.addr.iter().find_map(|addr| {
-        let ip = addr.ip();
-        match ip {
-            IpAddr::V4(v4) => {
-                // include shared ips; used by starlink
-                if v4.is_shared() {
-                    return Some(ip);
-                }
-                // exclude everything else that's global
-                if !v4.is_global() {
-                    return None;
-                }
-                Some(ip)
-            }
+        match addr.ip() {
+            IpAddr::V4(v4) if is_usable_v4(&v4) => Some(IpAddr::V4(v4)),
             IpAddr::V6(_) => {
                 // TODO: handle IPv6
                 None
             }
+            _ => None,
         }
     })
+}
+
+fn is_usable_v4(ip: &Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    let is_shared = a == 100 && (b & 0xc0) == 0x40;
+
+    is_shared
+        || !(ip.is_private()
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_broadcast()
+            || ip.is_documentation())
 }
 
 impl Service {
