@@ -23,7 +23,7 @@
       "aarch64-darwin"
     ];
     perSystem = perSystem @ { config, system, lib, pkgs, ... }: let
-      rustToolchain = inputs.fenix.packages.${system}.complete.withComponents [
+      rustToolchain = inputs.fenix.packages.${system}.stable.withComponents [
         "cargo"
         "clippy"
         "rustc"
