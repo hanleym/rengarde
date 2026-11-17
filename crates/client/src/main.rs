@@ -209,16 +209,7 @@ fn get_address_by_interface(iface: &NetworkInterface) -> Option<IpAddr> {
 }
 
 fn is_usable_v4(ip: &Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
-    let is_shared = a == 100 && (b & 0xc0) == 0x40;
-
-    is_shared
-        || !(ip.is_private()
-            || ip.is_loopback()
-            || ip.is_link_local()
-            || ip.is_unspecified()
-            || ip.is_broadcast()
-            || ip.is_documentation())
+    !(ip.is_loopback() || ip.is_link_local())
 }
 
 impl Service {
